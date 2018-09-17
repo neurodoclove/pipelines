@@ -1,0 +1,401 @@
+#!/bin/bash
+
+# 2018-4-4
+#
+# Tiffany's edit of Vincent's Script to Batch Coregister and Normalize PET data using ANTs and SPM
+# Assumes a BIDS format (http://bids.neuroimaging.io/)
+#
+# This script should NOT be run in the 'sourcedata' directory -- you should make a separate directory under 'derivatives'
+# You should run ANTs_Batch_TML_T1w before running this script
+#
+# This script performs the following steps:
+# 1. Segments PET data into GM+WM using SPM12
+# 2. Creates a PET and T1 mask from GM+WM segmentations using SPM12
+# 3. Calculates the coregstration parameters to bring the PET image into T1w space using SPM12
+# 4. Applys warp parameters that will bring ALL the PET images in the PET directory into MNI 152 space using ANTs
+# 5. Smooths PET data with a (default) 6mm FWHM kernel
+#
+# This script will generate code specific to each subject that will be stored in a 'code' directory
+#
+# By default, the script will run a batch on all the subject directories which begin with 'sub-' within your PWD
+# If you would like to, instead, specify a specific subject directory (or multiple subject directories) within your PWD,
+# supply an argument surrounded by quotes when running this command which contains the directory names
+# e.g., ANTs_Batch_TML_PET "sub-BPD974 sub-BPD884 sub-CF1036"
+#
+
+# Software versions
+ver_ANTs=$(cat /home/Software/ANTS-2.2.0/./ANTS-build/ANTsVersionConfig.h | tail -1)
+ver_FSL=$(cat ${FSLDIR}/etc/fslversion)
+OS=$(lsb_release -d | tr "\t" "_" | cut -d_ -f2)
+pipelinename=$0
+
+# Environment
+base=`pwd`
+#Sets the ref template to 2mm, MI PET data collected were 2.25mm isotropic
+ref="/usr/share/fsl/5.0/data/standard/MNI152_T1_2mm_brain.nii.gz"
+
+# Set smoothing kernel
+smkernel=6
+
+#Set random number and date to group batch job
+myrandnum=$((10000 + RANDOM % 99999))
+jobdate=$(date "+%F")
+
+# Loop over subject directories
+# Figures out whether subject directories were given in the arguments, otherwise
+# batches across directories named sub- in the PWD
+
+if [ "$#" -eq 0 ]; then
+    mysubjectarray=`ls ${base} | grep sub`
+else
+    mysubjectarray=( "$@" )
+fi
+
+    for S in ${mysubjectarray}; do   
+    
+    # Naming
+    SUB=$(basename ${S})
+
+    sDIR="${base}/${SUB}/code"
+    anat_DIR="${base}/${SUB}/anat"
+    pet_DIR="${base}/${SUB}/pet"
+    PETk1="F${SUB}_task-Pain_acq-cfn_LGN-5-40_pet_k1.nii"
+
+    #Make sure we've got a T1w image
+    if [ ! -e "${anat_DIR}/${SUB}_T1w.nii" ]; then
+	echo "${SUB}: Cannot find a T1w for coregistration/warping"
+	continue
+    fi
+
+    #For PET coregistration, this is the k1 we will use for most subjects
+
+    if [ ! -e "${pet_DIR}/${PETk1}" ]; then
+	PETk1="F${SUB}_task-Pain_acq-rcl_LGN-5-40_pet_k1.nii";
+	if [ ! -e "${pet_DIR}/${PETk1}" ]; then
+	   PETk1="F${SUB}_task-AffectSad_acq-cfn_LGN-5-40_pet_k1.nii";
+	if [ ! -e "${pet_DIR}/${PETk1}" ]; then
+	   PETk1="F${SUB}_task-AffectNeutral_acq-cfn_LGN-5-40_pet_k1.nii";
+	if [ ! -e "${pet_DIR}/${PETk1}" ]; then
+	   PETk1="F${SUB}_task-Baseline_acq-cfn_LGN-5-40_pet_k1.nii";
+	if [ ! -e "${pet_DIR}/${PETk1}" ]; then
+	   echo "${SUB}: Cannot find a PET k1 for coregistration"
+		continue
+	fi
+	fi
+	fi
+	fi
+    fi
+
+    mkdir -p "${sDIR}"
+    chmod 775 "${sDIR}"
+
+    # Got to trim the subject string -- Matlab dislikes dashes in .m files
+    trimSUB=${SUB:4}
+
+    # Create batches
+    cat <<-EOF > "${sDIR}/${trimSUB}_PET_segment.m"
+	% Segment PET data
+	% Environment
+	pipeline_name='${pipelinename}';
+	petDIR='${pet_DIR}';
+	PET=[petDIR,'/${PETk1},1'];
+
+	MatlabVer = version
+	which spm
+
+	% PET
+	matlabbatch{1}.spm.spatial.preproc.channel.vols = {PET};
+	matlabbatch{1}.spm.spatial.preproc.channel.biasreg = 0.001;
+	matlabbatch{1}.spm.spatial.preproc.channel.biasfwhm = 60;
+	matlabbatch{1}.spm.spatial.preproc.channel.write = [0 0];
+	matlabbatch{1}.spm.spatial.preproc.tissue(1).tpm = {'/home/Software/SPM/spm12_r6906/tpm/TPM.nii,1'};
+	matlabbatch{1}.spm.spatial.preproc.tissue(1).ngaus = 1;
+	matlabbatch{1}.spm.spatial.preproc.tissue(1).native = [1 0];
+	matlabbatch{1}.spm.spatial.preproc.tissue(1).warped = [0 0];
+	matlabbatch{1}.spm.spatial.preproc.tissue(2).tpm = {'/home/Software/SPM/spm12_r6906/tpm/TPM.nii,2'};
+	matlabbatch{1}.spm.spatial.preproc.tissue(2).ngaus = 1;
+	matlabbatch{1}.spm.spatial.preproc.tissue(2).native = [1 0];
+	matlabbatch{1}.spm.spatial.preproc.tissue(2).warped = [0 0];
+	matlabbatch{1}.spm.spatial.preproc.tissue(3).tpm = {'/home/Software/SPM/spm12_r6906/tpm/TPM.nii,3'};
+	matlabbatch{1}.spm.spatial.preproc.tissue(3).ngaus = 2;
+	matlabbatch{1}.spm.spatial.preproc.tissue(3).native = [1 0];
+	matlabbatch{1}.spm.spatial.preproc.tissue(3).warped = [0 0];
+	matlabbatch{1}.spm.spatial.preproc.tissue(4).tpm = {'/home/Software/SPM/spm12_r6906/tpm/TPM.nii,4'};
+	matlabbatch{1}.spm.spatial.preproc.tissue(4).ngaus = 3;
+	matlabbatch{1}.spm.spatial.preproc.tissue(4).native = [0 0];
+	matlabbatch{1}.spm.spatial.preproc.tissue(4).warped = [0 0];
+	matlabbatch{1}.spm.spatial.preproc.tissue(5).tpm = {'/home/Software/SPM/spm12_r6906/tpm/TPM.nii,5'};
+	matlabbatch{1}.spm.spatial.preproc.tissue(5).ngaus = 4;
+	matlabbatch{1}.spm.spatial.preproc.tissue(5).native = [0 0];
+	matlabbatch{1}.spm.spatial.preproc.tissue(5).warped = [0 0];
+	matlabbatch{1}.spm.spatial.preproc.tissue(6).tpm = {'/home/Software/SPM/spm12_r6906/tpm/TPM.nii,6'};
+	matlabbatch{1}.spm.spatial.preproc.tissue(6).ngaus = 2;
+	matlabbatch{1}.spm.spatial.preproc.tissue(6).native = [0 0];
+	matlabbatch{1}.spm.spatial.preproc.tissue(6).warped = [0 0];
+	matlabbatch{1}.spm.spatial.preproc.warp.mrf = 1;
+	matlabbatch{1}.spm.spatial.preproc.warp.cleanup = 1;
+	matlabbatch{1}.spm.spatial.preproc.warp.reg = [0 0.001 0.5 0.05 0.2];
+	matlabbatch{1}.spm.spatial.preproc.warp.affreg = 'mni';
+	matlabbatch{1}.spm.spatial.preproc.warp.fwhm = 0;
+	matlabbatch{1}.spm.spatial.preproc.warp.samp = 2;
+	matlabbatch{1}.spm.spatial.preproc.warp.write = [0 0];
+
+	% Run the batch
+	spm_jobman('run',matlabbatch(1));
+
+EOF
+
+
+    cat <<-EOF > "${sDIR}/${SUB}_PET_segment.sh"
+	#!/bin/bash
+
+	# Script generated on: $(date)
+
+	# This script processes data from subject ${SUB}
+	# It completes the following steps:
+	# - Creates a PET and T1 mask from GM+WM segmentations
+	#   using segmentation functions within SPM12
+
+	echo "--> Perform PET and T1 segmentations"
+
+	# Environment
+	pipeline_name=${pipelinename}
+	SUB=${SUB}
+	sDIR=${sDIR}
+	trimSUB=${trimSUB}
+
+	# Software used
+	echo "Linux distribution: ${OS}"
+
+	# Run PET and T1 segment
+	matlab -nodisplay -nodesktop -nosplash -r "run('${sDIR}/${trimSUB}_PET_segment.m'); quit;" | tee ${sDIR}/${SUB}_PET_segment_log.txt
+	exit
+EOF
+
+
+	cat <<-EOF > "${sDIR}/${SUB}_PET_mask.sh"
+	#!/bin/bash
+
+	# Script generated on: $(date)
+
+	# This script processes data from subject ${SUB}
+	# It completes the following steps:
+	# - Creates a PET and T1 mask from GM+WM segmentations
+	#   using segmentation functions within SPM12
+	# - Calculates the coregstration parameters to bring the
+	#   PET image into T1w space
+
+	source ~/.bash_profile
+
+	# Environment
+	pipeline_name=${pipelinename}
+	SUB=${SUB}
+	anat_DIR=${anat_DIR}
+	pet_DIR=${pet_DIR}
+	PETk1=${PETk1}
+	sDIR=${sDIR}
+
+	# Software used
+	echo "ANTs: ${ver_ANTs}"
+	echo "FSL: ${ver_FSL}"
+	echo "Linux distribution: ${OS}"
+
+	#Step 1: Create PET Mask
+	echo "--> Create PET Mask"
+	#Environment
+	# Create mask using segmentations
+	fslmaths \\
+	   \${pet_DIR}/c1\${PETk1} \\
+	   -add \\
+	   \${pet_DIR}/c2\${PETk1} \\
+	   -add \\
+	   \${pet_DIR}/c3\${PETk1} \\
+	   -thr 0.5 \\
+	   -bin \\
+	   \${pet_DIR}/mask_\${PETk1}.gz
+
+	# Mask out PET
+	fslmaths \\
+	   \${pet_DIR}/\${PETk1} \\
+	   -mas \\
+	   \${pet_DIR}/mask_\${PETk1}.gz \\
+	   \${pet_DIR}/tmp_\${PETk1}.gz
+
+	# Further mask mask using bet
+	bet \\
+	   \${pet_DIR}/tmp_\${PETk1}.gz \\
+	   \${pet_DIR}/ss_\${PETk1}.nii.gz \\
+	   -f 0.1
+
+	rm \${pet_DIR}/tmp_\${PETk1}.gz
+	gunzip -v \${pet_DIR}/ss_\${PETk1}.gz
+
+EOF
+
+    cat <<-EOF > "${sDIR}/${trimSUB}_PET_coReg.m"
+	% Coregister PET data (Skull Stripped) with T1w (segmented, masked and skull stripped from by ANTs T1w script)
+	% Then apply Coregistration to all PET images
+	% Environment
+	pipeline_name='${pipelinename}';
+	petDIR='${pet_DIR}';
+	ssPET=[petDIR,'/ss_${PETk1},1'];
+	anat_DIR='${anat_DIR}';
+	T1GM=[anat_DIR,'/c1${SUB}_T1w.nii,1'];
+	petinfo=dir(fullfile(petDIR,'Fsub*.nii'));
+	petlist=fullfile(petDIR,{petinfo.name});
+	   
+	MatlabVer = version
+	which spm
+
+	% PET
+	matlabbatch{1}.spm.spatial.coreg.estimate.ref = {T1GM};
+	matlabbatch{1}.spm.spatial.coreg.estimate.source = {ssPET};
+	matlabbatch{1}.spm.spatial.coreg.estimate.other = cellstr(petlist)';
+	matlabbatch{1}.spm.spatial.coreg.estimate.eoptions.cost_fun = 'nmi';
+	matlabbatch{1}.spm.spatial.coreg.estimate.eoptions.sep = [4 2];
+	matlabbatch{1}.spm.spatial.coreg.estimate.eoptions.tol = [0.02 0.02 0.02 0.001 0.001 0.001 0.01 0.01 0.01 0.001 0.001 0.001];
+	matlabbatch{1}.spm.spatial.coreg.estimate.eoptions.fwhm = [7 7];
+
+	% Run the batch
+	spm_jobman('run',matlabbatch(1));
+
+EOF
+
+    cat <<-EOF > "${sDIR}/${SUB}_PET_coReg.sh"
+	#!/bin/bash
+
+	# Script generated on: $(date)
+
+	# This script processes data from subject ${SUB}
+	# It completes the following steps:
+	# - Creates a PET and T1 mask from GM+WM segmentations
+	#   using segmentation functions within SPM12
+
+	echo "--> Perform PET and T1 segmentations"
+
+	# Environment
+	pipeline_name=${pipelinename}
+	SUB=${SUB}
+	sDIR=${sDIR}
+	trimSUB=${trimSUB}
+
+	# Software used
+	echo "Linux distribution: ${OS}"
+
+	# Run PET and T1 segment
+	matlab -nodisplay -nodesktop -nosplash -r "run('${sDIR}/${trimSUB}_PET_coReg.m'); quit;" | tee ${sDIR}/${SUB}_PET_coReg_log.txt
+	exit
+EOF
+    
+
+	cat <<-EOF > "${sDIR}/${SUB}_ants_applywarp.sh"
+	#!/bin/bash
+
+	#Script generated on: $(date)
+
+	#This script processes data from subject ${SUB}
+	#It completes the following steps:
+	#Applys warp parameters that will bring the
+	#PET into MNI 152 space
+	#and Smooths data with a 6mm FWHM kernel
+	
+	source ~/.bash_profile
+
+	# Environment
+	pipeline_name=${pipelinename}
+	SUB=${SUB}
+	smkernel=${smkernel}
+	ref=${ref}
+        anat_DIR=${anat_DIR}
+	pet_DIR=${pet_DIR}
+	sDIR=${sDIR}
+	PETk1=${PETk1}
+	mov=\${anat_DIR}/ss_N4_\${SUB}_T1w.nii.gz
+        echo "--> ANTs apply warps"
+
+	# Software used
+	echo "ANTs: ${ver_ANTs}"
+	echo "FSL: ${ver_FSL}"
+	echo "Linux distribution: ${OS}"
+
+	#Step 1: Apply Transforms to ALL the PET data, smooth, and unzip for SPM
+
+	for P in \`ls \${pet_DIR}/*.nii* | grep "^F"\`; do
+	   PETfile=$(basename \${P})
+	   echo \${PETfile}
+	   antsApplyTransforms \\
+	     -d 3 \\
+	     -i \${pet_DIR}/\${PETfile} \\
+	     -r \${ref} \\
+	     -n linear \\
+	     -t \${anat_DIR}/ants_warp_\${SUB}_1Warp.nii.gz \\
+	     -t \${anat_DIR}/ants_warp_\${SUB}_0GenericAffine.mat \\
+	     -o \${pet_DIR}/w\${PETfile}.gz \\
+	     -v 1 \\
+	   | tee \${sDIR}/\${SUB}_ants_applywarp_pet_log.txt
+
+	   # Smoothing
+	   echo "--> Smooth warped PET with \${smkernel}mm FWMH"
+	   s=\$(awk "BEGIN {print (\${smkernel}/2.3548)}")
+	   fslmaths \\
+	     \${pet_DIR}/w\${PETfile}.gz \\
+	     -s \${s} \\
+	     \${pet_DIR}/s\${smkernel}w\${PETfile}.gz
+
+	   # Unzip
+	   echo "--> Unzip smoothed warped PET for SPM"
+	   gunzip -v \${pet_DIR}/s\${smkernel}w\${PETfile}.gz
+
+	done
+	exit
+EOF
+
+	sc="${sDIR}/${SUB}_PET_wrapper.sh"
+	cat <<-EOF > "${sc}"
+	#!/bin/bash
+
+	# Script generated on: $(date)
+
+	# This script processes data from subject ${SUB}
+	# This is a wrapper script that combines multiple
+	#processing steps designed to place PET data into
+	# normalized space using ANTs
+	
+	source ~/.bash_profile
+
+	# Software used
+	echo "ANTs: ${ver_ANTs}"
+	echo "FSL: ${ver_FSL}"
+	echo "Linux distribution: ${OS}"
+
+	# Environment
+	pipeline_name=${pipelinename}
+	SUB=${SUB}
+	sDIR=${sDIR}
+	trimSUB=${trimSUB}
+	base=${base}
+	\${sDIR}/\${SUB}_PET_segment.sh
+	\${sDIR}/\${SUB}_PET_mask.sh
+	\${sDIR}/\${SUB}_PET_coReg.sh
+	\${sDIR}/\${SUB}_ants_applywarp.sh
+
+	# Copy over Vincent's para log
+	cp \${base}/code/para_output/\${jobdate}*\${SUB}_PET_wrapper.txt \${sDIR}/
+
+	exit
+EOF
+
+	chmod 777 ${sDIR}/*.sh
+
+	#Echo jobs to joblist
+
+	echo "bash ${sc}" >> "${base}/code/${jobdate}_${myrandnum}_PET_joblist.txt"
+done
+
+#Run jobs
+
+    echo "Running batch job: ${jobdate}_${myrandnum}_PET_joblist.txt"
+    
+/net/home/vkoppelm/Scripts/para -c "${base}/code/${jobdate}_${myrandnum}_PET_joblist.txt" -d "${base}/code" -p 4
+
+exit

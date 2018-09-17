@@ -1,0 +1,161 @@
+#!/bin/bash
+
+# 2018-4-3
+#
+# Tiffany's edit of Vincent's Script to Batch Coregister and Normalize PET data using ANTs and SPM
+# Assumes a BIDS format (http://bids.neuroimaging.io/)
+#
+# This script should NOT be run in the 'sourcedata' directory -- you should make a separate directory under 'derivatives'
+# You should run ANTs_Batch_TML_T1w before running this script
+#
+# This script performs the following steps:
+# 1. Segments PET data into GM+WM using SPM12
+# 2. Creates a PET and T1 mask from GM+WM segmentations using SPM12
+# 3. Calculates the coregstration parameters to bring the PET image into T1w space using SPM12
+# 4. Applys warp parameters that will bring ALL the PET images in the PET directory into MNI 152 space using ANTs
+# 5. Smooths PET data with a (default) 6mm FWHM kernel
+#
+# This script will generate code specific to each subject that will be stored in a 'code' directory
+#
+# By default, the script will run a batch on all the subject directories which begin with 'sub-' within your PWD
+# If you would like to, instead, specify a specific subject directory (or multiple subject directories) within your PWD,
+# supply an argument surrounded by quotes when running this command which contains the directory names
+# e.g., ANTs_Batch_TML_PET "sub-BPD974 sub-BPD884 sub-CF1036"
+#
+
+# Software versions
+ver_ANTs=$(cat /home/Software/ANTS-2.2.0/./ANTS-build/ANTsVersionConfig.h | tail -1)
+ver_FSL=$(cat ${FSLDIR}/etc/fslversion)
+OS=$(lsb_release -d | tr "\t" "_" | cut -d_ -f2)
+pipelinename=$0
+
+# Environment
+base=`pwd`
+#Sets the ref template to 2mm, MI PET data collected were 2.25mm isotropic
+ref="/usr/share/fsl/5.0/data/standard/MNI152_T1_2mm_brain.nii.gz"
+
+# Set smoothing kernel
+smkernel=6
+
+#Set random number and date to group batch job
+myrandnum=$((10000 + RANDOM % 99999))
+jobdate=$(date "+%F")
+
+task="MID"
+
+# Loop over subject directories
+# Figures out whether subject directories were given in the arguments, otherwise
+# batches across directories named sub- in the PWD
+
+if [ "$#" -eq 0 ]; then
+    mysubjectarray=`ls ${base} | grep sub`
+else
+    mysubjectarray=( "$@" )
+fi
+
+    for S in ${mysubjectarray}; do   
+    
+    # Naming
+    SUB=$(basename ${S})
+
+    sDIR="${base}/${SUB}/code"
+    anat_DIR="${base}/${SUB}/anat"
+    func_DIR="${base}/${SUB}/func"
+    func_overlay="${SUB}_inplaneT1_29.nii"
+    func_mean="mean${SUB}_task-${task}_run-01.nii"
+
+    #Make sure we've got a T1w image
+    if [ ! -e "${anat_DIR}/${SUB}_T1w.nii" ]; then
+	echo "${SUB}: Cannot find a T1w for coregistration/warping"
+	continue
+    fi
+
+    mkdir -p "${sDIR}"
+    chmod 775 "${sDIR}"
+
+    # Got to trim the subject string -- Matlab dislikes dashes in .m files
+    trimSUB=${SUB:4}
+
+    # Create batches
+	sc="${sDIR}/${SUB}_ants_fMRI_${task}_beta_applywarp.sh"
+	cat <<-EOF > "${sc}"
+	#!/bin/bash
+
+	#Script generated on: $(date)
+
+	#This script processes data from subject ${SUB}
+	#It completes the following steps:
+	#Applys warp parameters that will bring the
+	#fMRI into MNI 152 space
+	#and Smooths data with a ${smkernel}mm FWHM kernel
+	
+	source ~/.bash_profile
+
+	# Environment
+	pipeline_name=${pipelinename}
+	SUB=${SUB}
+	smkernel=${smkernel}
+	ref=${ref}
+        anat_DIR=${anat_DIR}
+	func_DIR=${func_DIR}
+	sDIR=${sDIR}
+	mov=\${anat_DIR}/ss_N4_\${SUB}_T1w.nii.gz
+        echo "--> ANTs apply warps"
+
+	# Software used
+	echo "ANTs: ${ver_ANTs}"
+	echo "FSL: ${ver_FSL}"
+	echo "Linux distribution: ${OS}"
+
+	#Step 1: Apply Transforms to ALL the fMRI beta data, smooth, and unzip for SPM
+
+	for P in \`ls \${func_DIR} | grep "beta"\`; do
+	   #Funcfile=$(basename \${P})
+	   Funcfile=\${P}
+	   echo \${Funcfile}
+	   antsApplyTransforms \\
+	     -d 3 \\
+	     -e 3 \\
+	     -i \${func_DIR}/\${Funcfile} \\
+	     -r \${ref} \\
+	     -n linear \\
+	     -t \${anat_DIR}/ants_warp_\${SUB}_1Warp.nii.gz \\
+	     -t \${anat_DIR}/ants_warp_\${SUB}_0GenericAffine.mat \\
+	     -o \${func_DIR}/w\${Funcfile}.gz \\
+	     -v 1 \\
+	   | tee \${sDIR}/\${SUB}_ants_applywarp_beta_fMRI_log.txt
+
+	   # Smoothing
+	   echo "--> Smooth warped fMRI with \${smkernel}mm FWMH"
+	   s=\$(awk "BEGIN {print (\${smkernel}/2.3548)}")
+	   fslmaths \\
+	     \${func_DIR}/w\${Funcfile}.gz \\
+	     -s \${s} \\
+	     \${func_DIR}/s\${smkernel}w\${Funcfile}.gz
+
+	   # Unzip
+	   echo "--> Unzip  warped fMRI for SPM"
+	   gunzip -v \${func_DIR}/s\${smkernel}w\${Funcfile}.gz
+
+	   # Unzip
+	   echo "--> Unzip  warped fMRI for SPM"
+	   gunzip -v \${func_DIR}/w\${Funcfile}.gz
+
+
+	done
+	exit
+EOF
+
+
+	#Echo jobs to joblist
+
+	echo "bash ${sc}" >> "${base}/code/${jobdate}_${myrandnum}_${task}_beta_joblist.txt"
+done
+
+#Run jobs
+
+#    echo "Running batch job: ${jobdate}_${myrandnum}_${task}_con_joblist.txt"
+    
+#/net/home/vkoppelm/Scripts/para -c "${base}/code/${jobdate}_${myrandnum}_${task}_con_joblist.txt" -d "${base}/code" -p 4
+
+exit
