@@ -1,0 +1,299 @@
+#!/bin/bash
+
+# 2018-2-9
+
+# Tiffany's edit of Vincent's Script to Batch Normalize Brains using ANTs
+# Assumes a BIDS format (http://bids.neuroimaging.io/)
+#
+# This version of this script fixes a dimension error that is sometimes thrown when trying to run the N4BiasFieldCorrection.
+# This will run fslcpgeom after the brain masks are generated to ensure that the T1w and the brain masks are in the same space. 
+#
+# This script should NOT be run in the 'sourcedata' directory -- you should make a separate directory under 'derivatives'
+#
+# 1. Creates a T1 mask from GM+WM segmentations using SPM12
+# 2. Performs N4 Bias field correction, estimated within the brain mask
+# 3. Performs T1 Skull Strip
+# 4. Calculates warp parameters that will bring the T1w image into MNI 152 space
+#
+# This script will generate code specific to each subject that will be stored in a 'code' directory
+#
+# By default, the script will run a batch on all the subject directories which begin with 'sub-' within your PWD
+# If you would like to, instead, specify a specific subject directory (or multiple subject directories) within your PWD,
+# supply an argument surrounded by quotes when running this command which contains the directory names
+# e.g., ANTs_Batch_TML_T1w "sub-BPD974 sub-BPD884 sub-CF1036"
+#
+
+# Software versions
+ver_ANTs=$(cat /home/Software/ANTS-2.2.0/./ANTS-build/ANTsVersionConfig.h | tail -1)
+ver_FSL=$(cat ${FSLDIR}/etc/fslversion)
+OS=$(lsb_release -d | tr "\t" "_" | cut -d_ -f2)
+
+# Environment
+base=`pwd`
+tmpl1mm="/usr/share/fsl/5.0/data/standard/MNI152_T1_1mm_brain.nii.gz"
+tmpl2mm="/usr/share/fsl/5.0/data/standard/MNI152_T1_2mm_brain.nii.gz"
+
+#Set random number and date to group batch job
+myrandnum=$((10000 + RANDOM % 99999))
+jobdate=$(date "+%F")
+
+# Loop over subject directories
+# Figures out whether subject directories were given in the arguments, otherwise
+# batches across directories named sub- in the PWD
+
+if [ "$#" -eq 0 ]; then
+    mysubjectarray=`ls ${base} | grep sub`
+else
+    mysubjectarray=( "$@" )
+fi
+
+    for S in ${mysubjectarray}; do    
+
+    # Naming
+    SUB=$(basename ${S})
+
+    sDIR="${base}/${SUB}/code"
+    anat_DIR="${base}/${SUB}/anat"
+    pet_DIR="${base}/${SUB}/pet"
+    
+    #Make sure we've got a T1w image, if not, echo and skip
+    if [ ! -e "${anat_DIR}/${SUB}_T1w.nii" ]; then
+	echo "${SUB}: Cannot find a T1w for coregistration/warping"
+	continue
+    fi
+
+    mkdir -p "${sDIR}"
+    chmod 777 "${sDIR}"
+
+    # Got to trim the subject string -- Matlab dislikes dashes in .m files
+    trimSUB=${SUB:4}
+
+    # Create batches
+    cat <<-EOF > "${sDIR}/${trimSUB}_T1_segment.m"
+	% Segment T1 data
+	% Environment
+	anatDIR='${anat_DIR}';
+	T1=[anatDIR,'/${SUB}_T1w.nii,1'];
+	MatlabVer = version
+	which spm
+
+	% T1
+	matlabbatch{1}.spm.spatial.preproc.channel.vols = {T1};
+	matlabbatch{1}.spm.spatial.preproc.channel.biasreg = 0.001;
+	matlabbatch{1}.spm.spatial.preproc.channel.biasfwhm = 60;
+	matlabbatch{1}.spm.spatial.preproc.channel.write = [0 0];
+	matlabbatch{1}.spm.spatial.preproc.tissue(1).tpm = {'/home/Software/SPM/spm12_r6906/tpm/TPM.nii,1'};
+	matlabbatch{1}.spm.spatial.preproc.tissue(1).ngaus = 1;
+	matlabbatch{1}.spm.spatial.preproc.tissue(1).native = [1 0];
+	matlabbatch{1}.spm.spatial.preproc.tissue(1).warped = [0 0];
+	matlabbatch{1}.spm.spatial.preproc.tissue(2).tpm = {'/home/Software/SPM/spm12_r6906/tpm/TPM.nii,2'};
+	matlabbatch{1}.spm.spatial.preproc.tissue(2).ngaus = 1;
+	matlabbatch{1}.spm.spatial.preproc.tissue(2).native = [1 0];
+	matlabbatch{1}.spm.spatial.preproc.tissue(2).warped = [0 0];
+	matlabbatch{1}.spm.spatial.preproc.tissue(3).tpm = {'/home/Software/SPM/spm12_r6906/tpm/TPM.nii,3'};
+	matlabbatch{1}.spm.spatial.preproc.tissue(3).ngaus = 2;
+	matlabbatch{1}.spm.spatial.preproc.tissue(3).native = [1 0];
+	matlabbatch{1}.spm.spatial.preproc.tissue(3).warped = [0 0];
+	matlabbatch{1}.spm.spatial.preproc.tissue(4).tpm = {'/home/Software/SPM/spm12_r6906/tpm/TPM.nii,4'};
+	matlabbatch{1}.spm.spatial.preproc.tissue(4).ngaus = 3;
+	matlabbatch{1}.spm.spatial.preproc.tissue(4).native = [0 0];
+	matlabbatch{1}.spm.spatial.preproc.tissue(4).warped = [0 0];
+	matlabbatch{1}.spm.spatial.preproc.tissue(5).tpm = {'/home/Software/SPM/spm12_r6906/tpm/TPM.nii,5'};
+	matlabbatch{1}.spm.spatial.preproc.tissue(5).ngaus = 4;
+	matlabbatch{1}.spm.spatial.preproc.tissue(5).native = [0 0];
+	matlabbatch{1}.spm.spatial.preproc.tissue(5).warped = [0 0];
+	matlabbatch{1}.spm.spatial.preproc.tissue(6).tpm = {'/home/Software/SPM/spm12_r6906/tpm/TPM.nii,6'};
+	matlabbatch{1}.spm.spatial.preproc.tissue(6).ngaus = 2;
+	matlabbatch{1}.spm.spatial.preproc.tissue(6).native = [0 0];
+	matlabbatch{1}.spm.spatial.preproc.tissue(6).warped = [0 0];
+	matlabbatch{1}.spm.spatial.preproc.warp.mrf = 1;
+	matlabbatch{1}.spm.spatial.preproc.warp.cleanup = 1;
+	matlabbatch{1}.spm.spatial.preproc.warp.reg = [0 0.001 0.5 0.05 0.2];
+	matlabbatch{1}.spm.spatial.preproc.warp.affreg = 'mni';
+	matlabbatch{1}.spm.spatial.preproc.warp.fwhm = 0;
+	matlabbatch{1}.spm.spatial.preproc.warp.samp = 2;
+	matlabbatch{1}.spm.spatial.preproc.warp.write = [0 0];
+
+	% Run the batch
+	spm_jobman('run',matlabbatch(1));
+
+EOF
+
+
+    cat <<-EOF > "${sDIR}/${SUB}_T1_segment.sh"
+	#!/bin/bash
+
+	# Script generated on: $(date)
+
+	# This script processes data from subject ${SUB}
+	# It completes the following steps:
+	# - Creates a T1 mask from GM+WM segmentations
+	#   using segmentation functions within SPM12
+
+	echo "--> Perform T1 segmentations"
+
+	# Environment
+	SUB=${SUB}
+	sDIR=${sDIR}
+	trimSUB=${trimSUB}
+
+	# Software used
+	echo "Linux dsitribution: ${OS}"
+
+	# Run T1 segment
+	matlab -nodisplay -nodesktop -nosplash -r "run('${sDIR}/${trimSUB}_T1_segment.m'); quit;" | tee ${sDIR}/${SUB}_T1_segment_log.txt
+	exit
+EOF
+
+
+	cat <<-EOF > "${sDIR}/${SUB}_ants_warp.sh"
+	#!/bin/bash
+
+	# Script generated on: $(date)
+
+	# This script processes data from subject ${SUB}
+	# It completes the following steps:
+	# - Performs N4 Bias field correction, estimated within the brain mask
+	# - Calculation of warp parameters that will bring the
+	#   T1w image into MNI 152 space
+	echo "--> ANTs warp T1w into MNI152 space "
+
+	source ~/.bash_profile
+	# Environment
+	SUB=${SUB}
+	tmpl1mm=${tmpl1mm}
+	tmpl2mm=${tmpl2mm}
+	anat_DIR=${anat_DIR}
+	sDIR=${sDIR}
+
+	# Software used
+	echo "ANTs: ${ver_ANTs}"
+	echo "FSL: ${ver_FSL}"
+	echo "Linux distribution: ${OS}"
+
+	#------------------------------------------------------------------
+	#Step 1: Create T1 brain mask
+	echo "--> Calculate T1w brain mask"
+	fslmaths \\
+	   \${anat_DIR}/c1\${SUB}_T1w.nii \\
+	   -add \\
+	   \${anat_DIR}/c2\${SUB}_T1w.nii \\
+	   -thr 0.5 \\
+	   -bin \\
+	   \${anat_DIR}/\${SUB}_T1w_brain_mask.nii.gz
+
+	fslmaths \\
+	   \${anat_DIR}/\${SUB}_T1w_brain_mask.nii.gz \\
+	   -dilM -dilM -fillh \\
+	   \${anat_DIR}/\${SUB}_T1w_brain_mask_dil2.nii.gz
+
+#Step 1b: Make sure the T1w and the T1w brain masks are in the same space
+	fslcpgeom \${anat_DIR}/\${SUB}_T1w.nii \${anat_DIR}/\${SUB}_T1w_brain_mask.nii.gz
+	fslcpgeom \${anat_DIR}/\${SUB}_T1w.nii \${anat_DIR}/\${SUB}_T1w_brain_mask_dil2.nii.gz
+
+
+	#Step 2: N4 Bias Field Correction
+	echo "---> N4 Bias field correction"
+	N4BiasFieldCorrection \\
+	   -d 3 \\
+	   -i \${anat_DIR}/\${SUB}_T1w.nii  \\
+	   -w \${anat_DIR}/\${SUB}_T1w_brain_mask.nii.gz \\
+	   -x \${anat_DIR}/\${SUB}_T1w_brain_mask_dil2.nii.gz \\
+	   -s 2 \\
+	   -c [125x100x75x50] \\
+	   -o [\${anat_DIR}/N4_\${SUB}_T1w.nii.gz,\${anat_DIR}/BF_\${SUB}_T1w.nii.gz] \\
+	   -v 1 \\
+	| tee \${sDIR}/\${SUB}_N4BiasField_log.txt
+
+	#Step 3: Skull strip
+	echo "--> Perfom T1w Skull Strip"
+	fslmaths \\
+	   \${anat_DIR}/N4_\${SUB}_T1w.nii \\
+	   -mas \${anat_DIR}/\${SUB}_T1w_brain_mask.nii.gz \\
+	   \${anat_DIR}/ss_N4_\${SUB}_T1w.nii.gz
+
+	#Step 4: ANTs normalization: Calculate Warp (T1 to MNI152)
+	mov=\${anat_DIR}/ss_N4_\${SUB}_T1w.nii.gz
+	ref=\${FSLDIR}/data/standard/MNI152_T1_1mm_brain.nii.gz
+
+	echo "--> ANTs calculate warp from T1 to MNI152"
+
+	#Step 5:  Calculate T1w to MNI warp
+	echo "--> Calculate T1w to MNI warp"
+	antsRegistration \\
+	   -d 3 \\
+	   -r [\${ref}, \${mov} ,1] \\
+	   -m mattes[\${ref}, \${mov} , 1 , 32, regular, 0.3 ] \\
+	     -t translation[ 0.1 ] \\
+	     -c [10000x111110x11110,1.e-8,20]  \\
+	     -s 4x2x1vox  \\
+	     -f 6x4x2 -l 1 \\
+	   -m mattes[\${ref}, \${mov} , 1 , 32, regular, 0.3 ] \\
+	     -t rigid[ 0.1 ] \\
+	     -c [10000x111110x11110,1.e-8,20]  \\
+	     -s 4x2x1vox  \\
+	     -f 3x2x1 -l 1 \\
+	   -m mattes[\${ref}, \${mov} , 1 , 32, regular, 0.3 ] \\
+	     -t affine[ 0.1 ] \\
+	     -c [10000x111110x11110,1.e-8,20]  \\
+	     -s 4x2x1vox  \\
+	     -f 3x2x1 -l 1 \\
+	   -m mattes[\${ref}, \${mov} , 0.5 , 32 ] \\
+	     -m cc[\${ref}, \${mov} , 0.5 , 4 ] \\
+	     -t SyN[ .20, 3, 0 ] \\
+	     -c [100x100x50,-0.01,5 ]  \\
+	     -s 1x0.5x0vox  \\
+	     -f 4x2x1 -l 1 -u 1 -z 1 \\
+	   -o [\${anat_DIR}/ants_warp_\${SUB}_,\${anat_DIR}/w\${SUB}_T1w.nii.gz] \\
+	   -v 1 \\
+	| tee \${sDIR}/\${SUB}_ants_warp_log.txt
+	exit
+EOF
+
+
+	sc="${sDIR}/${SUB}_T1_wrapper.sh"
+	cat <<-EOF > "${sc}"
+	#!/bin/bash
+
+	# Script generated on: $(date)
+
+	# This script processes data from subject ${SUB}
+	# This is a wrapper script that combines multiple
+	#processing steps designed to place PET data into
+	# normalized space using ANTs
+
+	source ~/.bash_profile
+	# Software used
+	echo "ANTs: ${ver_ANTs}"
+	echo "FSL: ${ver_FSL}"
+	echo "Linux dsitribution: ${OS}"
+
+	# Environment
+	SUB=${SUB}
+	sDIR=${sDIR}
+	trimSUB=${trimSUB}
+	\${sDIR}/\${SUB}_T1_segment.sh
+	\${sDIR}/\${SUB}_ants_warp.sh
+
+	# Copy over Vincent's para log
+	cp \${paradir}/\${jobdate}*\${S}_T1_wrapper.txt \${sDIR}/
+
+	exit
+EOF
+
+
+       	chmod 777 ${sDIR}/*.sh
+	chmod 777 ${sDIR}/*.m
+
+	#Echo jobs to joblist
+	echo "bash ${sc}" >> "${base}/code/${jobdate}_${myrandnum}_T1_joblist.txt"
+done
+
+    #Run jobs
+
+    echo "Running batch job: ${jobdate}_${myrandnum}_T1_joblist.txt"
+    
+/net/home/vkoppelm/Scripts/para -c "${base}/code/${jobdate}_${myrandnum}_T1_joblist.txt" -d "${base}/code" -p 4
+
+
+exit
